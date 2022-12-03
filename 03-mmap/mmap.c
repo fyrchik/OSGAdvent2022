@@ -45,7 +45,29 @@ int barfoo = 42;
 page_aligned persistent int persistent_end;
 
 int setup_persistent(char *fn) {
-  // FIXME: Install persistent mapping and return 0;
+  int fd = open(fn, O_RDWR | O_CREAT, 0660);
+  if (fd == -1) {
+    perror("open");
+    return -1;
+  }
+
+  size_t len = &persistent_end - &persistent_start;
+  if (ftruncate(fd, len) == -1) {
+    perror("ftruncate");
+    goto cleanup;
+  }
+
+  void *addr = mmap(&persistent_start, len, PROT_READ | PROT_WRITE,
+                    MAP_SHARED | MAP_FIXED, fd, 0);
+  if (addr == NULL) {
+    perror("mmap");
+    goto cleanup;
+  }
+
+  return 0;
+
+cleanup:
+  close(fd);
   return -1;
 }
 
