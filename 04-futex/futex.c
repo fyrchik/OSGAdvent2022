@@ -50,12 +50,33 @@ void sem_init(atomic_int *sem, unsigned initval) { atomic_init(sem, initval); }
    semaphore. If the semaphore counter is larger than zero, we just
    decrement it. If it is already zero, we sleep until the value
    becomes larger than zero and try decrementing it again. */
-void sem_down(atomic_int *sem) {}
+void sem_down(atomic_int *sem) {
+  while (1) {
+    int current = atomic_load(sem);
+    if (current > 0 &&
+        atomic_compare_exchange_strong(sem, &current, current - 1)) {
+      return;
+    }
+
+    int ret = futex_wait(sem, 0);
+    if (ret == -1 && errno != EAGAIN) {
+      perror("futex_wait");
+      exit(EXIT_FAILURE);
+    }
+  }
+}
 
 /* The semaphore increment operation increments the counter and wakes
    up one waiting thread, if there is the possibility of waiting
    threads. */
-void sem_up(atomic_int *sem) {}
+void sem_up(atomic_int *sem) {
+  atomic_fetch_add(sem, 1);
+
+  if (futex_wake(sem, 1) == -1) {
+    perror("futex_wake");
+    exit(EXIT_FAILURE);
+  }
+}
 
 ////////////////////////////////////////////////////////////////
 // Layer 2: Semaphore-Synchronized Bounded Buffer
@@ -81,14 +102,42 @@ struct bounded_buffer {
   void *data[3];
 };
 
-void bb_init(struct bounded_buffer *bb) {}
+void bb_init(struct bounded_buffer *bb) {
+  sem_init(&bb->slots, 3);
+  sem_init(&bb->elements, 0);
+  sem_init(&bb->lock, 1);
+
+  bb->read_idx = 0;
+  bb->write_idx = 0;
+}
 
 void *bb_get(struct bounded_buffer *bb) {
-  void *ret = NULL;
+  sem_down(&bb->elements);
+
+  sem_down(&bb->lock);
+
+  void *ret = bb->data[bb->read_idx];
+  bb->read_idx = (bb->read_idx + 1) % ARRAY_SIZE(bb->data);
+
+  sem_up(&bb->lock);
+
+  sem_up(&bb->slots);
+
   return ret;
 }
 
-void bb_put(struct bounded_buffer *bb, void *data) {}
+void bb_put(struct bounded_buffer *bb, void *data) {
+  sem_down(&bb->slots);
+
+  sem_down(&bb->lock);
+
+  bb->data[bb->write_idx] = data;
+  bb->write_idx = (bb->write_idx + 1) % ARRAY_SIZE(bb->data);
+
+  sem_up(&bb->lock);
+
+  sem_up(&bb->elements);
+}
 
 int main() {
   // First, we use mmap to establish a piece of memory that is
@@ -128,15 +177,32 @@ int main() {
 
     printf("Child has initialized the bounded buffer\n");
 
-    // FIXME: Retrieve elements from the bounded buffer
+    char *data = bb_get(bb);
+    while (data != NULL) {
+      printf("Received data: %s\n", data);
+      data = bb_get(bb);
+    }
+    printf("Received null, finish execution.");
   } else {
     ////////////////////////////////////////////////////////////////
     // Child
-    char *data[] = {"Hello", "World", "!", "How", "are", "you", "?"};
+    char *data[] = {
+        "Hello", "World", "!", "How", "are", "you", "?", NULL,
+    };
     (void)data;
-    // FIXME: Initialize the bounded buffer after sleeping a second
-    // FIXME: Wake up the parent who is waiting on semaphore
-    // FIXME: Push all char pointers through the bounded buffer to the parent.
+
+    // Initialize the bounded buffer after sleeping a second
+    sleep(1);
+    bb_init(bb);
+
+    // Wake up the parent who is waiting on semaphore
+    sem_up(semaphore);
+
+    // Push all char pointers through the bounded buffer to the parent.
+    for (int i = 0; i < 7; i++) {
+      bb_put(bb, data[i]);
+    }
+    bb_put(bb, NULL);
   }
 
   return 0;
