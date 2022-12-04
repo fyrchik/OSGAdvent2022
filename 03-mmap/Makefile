@@ -1,5 +1,5 @@
 mmap: mmap.c
-	gcc mmap.c -o mmap -static
+	gcc mmap.c -o mmap -static -O3
 
 run: ./mmap
 	./mmap

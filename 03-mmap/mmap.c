@@ -22,27 +22,30 @@
 #define PAGE_SIZE 4096
 #define page_aligned __attribute__((aligned(PAGE_SIZE)))
 
-// This is a special variable that we use in setup_persistent to
-// locate the start of the persistent section. We page align it, such
-// that its address is placed at the beginning of a page. This is
-// equivalent to an HEX address ending in 3 zeros.
-//
-// For example: &persistent_start = 0x4b8000
-page_aligned persistent int persistent_start;
+// This is anonymous struct describes our persistent data and a
+// variable with that type, named psec, is defined.
+struct /* anonymous */ {
+    // We mark the first variable in our struct as being page aligned.
+    // This is equivalent to a start address an address ending in 3
+    // hexadecimal zeros.
+    //
+    // By aligning the first variable in the struct, two things happen:
+    //
+    // 1. Global variables of struct persistent_section are placed at
+    //    the beginning of a page.
+    // 2. The size of the section is padded to the next multiple of
+    //    PAGE_SIZE, such that array-address calculations and pointer
+    //    arithmetik work correctly.
+    page_aligned int persistent_start;
 
-// This is our actual persistent variable. We will use it as a
-// counter, how often the program was executed.
-persistent int foobar = 23;
+   // This is our persistent variable. We will use it as a counter,
+   // how often the program was executed.
+    int foobar;
+} psec;
 
-// Although this variable is placed between persistent_{start,end}, it
-// does *NOT* have the persistent variable, whereby it is place not
-// within the persistent section.,
+// For comparision, we also create another global variable, that is
+// initialized from the program ELF on every program start.
 int barfoo = 42;
-
-// A second special variable that marks the end of the persistent
-// region. We also make it page aligned, whereby the linker will not
-// place other
-page_aligned persistent int persistent_end;
 
 int setup_persistent(char *fn) {
   int fd = open(fn, O_RDWR | O_CREAT, 0660);
@@ -51,13 +54,12 @@ int setup_persistent(char *fn) {
     return -1;
   }
 
-  size_t len = &persistent_end - &persistent_start;
-  if (ftruncate(fd, len) == -1) {
+  if (ftruncate(fd, sizeof(psec)) == -1) {
     perror("ftruncate");
     goto cleanup;
   }
 
-  void *addr = mmap(&persistent_start, len, PROT_READ | PROT_WRITE,
+  void *addr = mmap(&psec, sizeof(psec), PROT_READ | PROT_WRITE,
                     MAP_SHARED | MAP_FIXED, fd, 0);
   if (addr == NULL) {
     perror("mmap");
@@ -72,18 +74,18 @@ cleanup:
 }
 
 int main(int argc, char *argv[]) {
-  printf("section persistent: %p--%p\n", &persistent_start, &persistent_end);
+  printf("psec: %p--%p\n", &psec, &psec + 1);
   // Install the persistent mapping
   if (setup_persistent("mmap.persistent") == -1) {
     perror("setup_persistent");
     return -1;
   }
 
-  // For foobar, we see that each invokation of the programm will
+  // For psec.foobar, we see that each invokation of the programm will
   // yield an incremented result.
   // For barfoo, which is *NOT* in the persistent section, we will
   // always get the same result.
-  printf("foobar(%p) = %d\n", &foobar, foobar++);
+  printf("foobar(%p) = %d\n", &psec.foobar, psec.foobar++);
   printf("barfoo(%p) = %d\n", &barfoo, barfoo++);
 
   { // This is ugly and you should not do this in production code.
